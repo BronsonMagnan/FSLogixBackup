@@ -41,3 +41,7 @@ The service account running this script needs full access to the SOFS share, ful
 
 #Class UML Diagram
 ![Class UML Diagram](https://github.com/BronsonMagnan/FSLogixBackup/blob/master/ClassUML.png)
+
+#Logging samples
+![Console Log](https://github.com/BronsonMagnan/FSLogixBackup/blob/master/ConsoleLog.png)
+![Log File](https://github.com/BronsonMagnan/FSLogixBackup/blob/master/LogFile.png)
