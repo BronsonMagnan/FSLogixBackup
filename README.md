@@ -1,8 +1,12 @@
 # FSLogixBackup
 Backup Engine for FSLogix Profiles store on Scale Out File Servers
 
+#Usage
+
+```.\Backup-FSLogixProfile.ps1 -ProfilePath "\\sofs.corp.contoso.com\ProfileDisks" -BackupPath "E:\Profiles" -LogPath "E:\ProfileBackups"```
+
 #Parameter description
-The script takes 4 parameters, 1 is options.
+The script takes 4 parameters, 1 is optional.
 1. ProfilePath - this is the path to the SOFS share that contains either FSLogix Profiles or ODFC Containers
 2. BackupPath - this is the path to the Backup Storage, the program will create subfolders per user, and subfolders under each user for "Profile" or "ODFC" backups
 3. LogPath - this is the folder where the log should be written. The log will be generated with the date in it, once per day.
