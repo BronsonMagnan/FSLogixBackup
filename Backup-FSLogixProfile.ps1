@@ -2,7 +2,7 @@ param(
     [parameter(Mandatory)][validateNotNullOrEmpty()][string]$ProfilePath,
     [parameter(Mandatory)][validateNotNullOrEmpty()][string]$BackupPath,
     [parameter(Mandatory)][validateNotNullOrEmpty()][string]$LogPath,
-    [validateNotNullOrEmpty()][string]$MountFolder = "C:\Mount"
+    [validateNotNullOrEmpty()][string]$MountFolder = "X:\Mount"
 )
 
 #region class LogFile
@@ -462,17 +462,30 @@ class JobDispatcher {
 
 
 
-$LogFilePath = $(join-path -path $LogPath -ChildPath $("ProfileBackup-{0:yyyyMMdd}.log" -f (get-date)))
-$timeLimit = [TimeSpan]::new(5,0,0)
+class BackupApplication {
+    [Preferences]$Preferences
+    [TimeSpan]$timeLimit
+    [String]$LogFilePath
+    [ProfileSearch]$ProfileSearch
+    [JobEngine]$JobEngine
+    [JobDispatcher]$Dispatcher
+    BackupApplication($ProfilePath,$BackupPath,$MountFolder,$logPath) {
+        $this.timeLimit = [TimeSpan]::new(5,0,0)
+        $this.LogFilePath = $(join-path -path $LogPath -ChildPath $("ProfileBackup-{0:yyyyMMdd}.log" -f (get-date)))
+        $this.Preferences = [Preferences]::new($BackupPath,$MountFolder,$this.timelimit,$this.logfilePath)
+        $this.ProfileSearch = [ProfileSearch]::new($ProfilePath)
+        $this.JobEngine =  [JobEngine]::new($this.preferences) 
+        $this.Dispatcher = [JobDispatcher]::new($this.ProfileSearch.getSearchResults(),$this.Preferences)
+    }
+    [void] Start() {
+        $this.Dispatcher.Dispatch($this.JobEngine)
+        $this.JobEngine.Start()   
+    }
+}
 
-$Preferences = [Preferences]::new($BackupPath,$MountFolder,$timelimit,$logfilePath)
+$Application = [BackupApplication]::new($ProfilePath,$BackupPath,$MountFolder,$logPath)
 
-$ProfileSearch = [ProfileSearch]::new($ProfilePath) 
+#$Application = [BackupApplication]::new("\\fslogix\Profiles\","X:\Backups\","X:\Mount","X:\Log\")
 
-$JobEngine = [JobEngine]::new($preferences) 
-
-$Dispatcher = [JobDispatcher]::new($ProfileSearch.getSearchResults(),$Preferences)
-$Dispatcher.Dispatch($JobEngine)
-
-$jobEngine.Start()
+$Application.start()
 
