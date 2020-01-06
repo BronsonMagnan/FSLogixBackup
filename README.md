@@ -1,6 +1,17 @@
 # FSLogixBackup
 Backup Engine for FSLogix Profiles store on Scale Out File Servers
 
+#What is does
+1. Mounts the VHDX File
+2. If it is a profile disk: 
+2.1. incrementally robocopies all folders to a backup directory structure specified, with versioning, skips appdata\local
+2.2. deletes the appdata\local\temp folder
+3. If it is a ODFC disk: 
+3.1. robocopies incrementally all folders, excludes OST files. Good for keeping a backup of the OneDrive cache.
+3.2. implements future ODFC cleanup method.
+4. Consolidates and trims the volume
+5. Shrinks the VHDX file
+
 #Usage
 
 ```.\Backup-FSLogixProfile.ps1 -ProfilePath "\\sofs.corp.contoso.com\ProfileDisks" -BackupPath "E:\Profiles" -LogPath "E:\ProfileBackups"```
@@ -14,7 +25,12 @@ The script takes 4 parameters, 1 is optional.
 5. There is a hidden parameter in the code that controls the length of the backup window, currently set to five hours before stopping.
 
 #Requirements
-The service account running this script needs full access to the SOFS share, full access to the backup and logging repositories. The virtual machine executing this script needs to have hyper-v installed because it is running the VHD cmdlets. So that means that exposeVirtualizationExtensions must be set to true on the hyper-v VMProcessor.
+1. The service account running this script needs full access to the SOFS share, full access to the backup and logging repositories. 
+2. The virtual machine executing this script needs to have hyper-v installed because it is running the VHD cmdlets. So that means that exposeVirtualizationExtensions must be set to true on the hyper-v virtual machine VMProcessor property.
+3. The O: drive needs to be available - this is a current design restriction, and will be remediated in future versions.
+
+#Updates
+1. 2020-06-01, added temp file deletion, defrag and trim for more effective VHD shrinking
 
 #Code flow description:
 1. The backup path, mount folder, time limit, and log file path are loaded into a Preference object.
@@ -37,10 +53,19 @@ The service account running this script needs full access to the SOFS share, ful
 6.3.5.1. The backupStrategy's backup() method is called
 6.3.5.2. The backupStrategy's GetLog() method is called, which returns the Robocopy log header and footer
 6.3.5.3. The returned log is injested into our program's log.
-6.3.6. Removes the access path
-6.3.7. Optimizes the VHDX
-6.3.8. Dismounts the VHDX
+6.3.6. Executes the cleanup() method
+6.3.6.1.  The cleanupStrategy's cleanup() method is called
+6.3.6.1.1. For Profile disks, this deletes the contents of the following locations:
+6.3.6.1.1.1. AppData\Local\Temp
+6.3.6.2.  The cleanupStrategy's GetLog() method is called, which returns the Cleanup specific log entries
+6.3.6.2.1. Currently no cleanups are implemented for ODFC disks.
+6.3.7.1. Removes the access path
+6.3.7.2. Dismounts the VHDX
 6.3.9. Cleans up the mount point
+6.3.10.1. Creates a new drive letter mount to the vhdx
+6.3.10.2. Optimizes the File System with -Analyze -SlabConsolidate -Retrim parameters
+6.3.10.3. Removes the drive letter and dismounts the vhdx
+6.3.11. Optimizes the VHDX
 
 
 #Class UML Diagram
