@@ -155,6 +155,7 @@ class FSLogixProfile {
     hidden [string]$ODFCDiskPath = $null
     FSLogixProfile([System.IO.DirectoryInfo]$ProfilePath) {
         $NullResult = $ProfilePath.Name -match "S-1-\d{1,2}-\d{2}-\d{8,10}-\d{8,10}-\d{8,10}-\d{1,5}"
+        write-debug -Message "Regex output: $NullResult"
         $this.UserName = $ProfilePath.name.replace($Matches[0],"").replace("_","")
         $this.ProfileDiskPath = $ProfilePath | Get-ChildItem | Where-Object { $_.name -like "Profile*" } | Select-Object -ExpandProperty Fullname
         $this.ODFCDiskPath = $ProfilePath | Get-ChildItem | Where-Object { $_.name -like "ODFC*" } | Select-Object -ExpandProperty Fullname
@@ -231,7 +232,7 @@ class VHDXBackupJob : Job {
         }
     }
     hidden [void]MountWithAccessPath() {
-        $this.mountPoint=Mount-VHD $this.VHDXPath -Passthru -Verbose | Get-Disk | Get-Partition | Add-PartitionAccessPath -AccessPath $this.MountFolder -PassThru -Verbose | get-volume | select *        
+        $this.mountPoint=Mount-VHD $this.VHDXPath -Passthru -Verbose | Get-Disk | Get-Partition | Add-PartitionAccessPath -AccessPath $this.MountFolder -PassThru -Verbose | get-volume | select-object *        
     }
     hidden [void]RemoveAccessPath() {
         $diskNumber = (get-volume | Where-Object {$_.FileSystemLabel -eq $this.mountPoint.FileSystemLabel} | Get-Partition | Get-disk).Number
