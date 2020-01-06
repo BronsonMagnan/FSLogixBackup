@@ -112,6 +112,58 @@ class iODFCBackup : BackupInterface {
 
 #endregion
 
+#region Cleanup Strategy Interfaces 
+class CleanupInterface {
+    [string]$TargetPath
+    hidden [string]$cleanupLog
+    CleanupInterface([string]$TargetPath) {
+        $this.TargetPath = $TargetPath
+        $this.cleanupLog = (New-TemporaryFile).FullName
+    }
+    [void]Cleanup(){
+        #Virtual Implementation        
+    }
+    [void]Log([string]$Message) {
+        add-Content $message -Path $this.cleanuplog
+    }
+    [string[]]GetLog() {
+        $templog = @()
+        $templog = get-content -path $this.cleanupLog
+        remove-item -Path $this.cleanupLog -Force -ErrorAction SilentlyContinue | Out-Null
+        return $templog
+    }
+}
+
+class iProfileCleanup : CleanupInterface {
+    iProfileCleanup([string]$TargetPath):base ($TargetPath) {
+    }
+    [void]Cleanup() {
+        #Profile specific cleanup focus
+        #temp files under appdata\local\temp
+        $profilepath = join-path -Path $this.TargetPath -ChildPath "Profile"
+        $AppData = join-path -path $profilepath -ChildPath "AppData"
+        $LocalAppData = join-path $AppData -ChildPath "Local"
+        $TempFolder = join-path $LocalAppData -ChildPath "Temp"
+        if (test-path -Path $TempFolder -ErrorAction SilentlyContinue) {
+            $this.Log("TempFolder Path is $TempFolder")
+            $Contents = Get-ChildItem -Path $tempfolder -Recurse
+            $SizeInMb = ($contents | Where-Object { ! $_.PSIsContainer} | Select-Object -ExpandProperty Length | Measure-Object -Sum).sum / 1mb
+            $this.log("TempFolder is $SizeInMb MB in size")
+            $this.log("Removing temp files")
+            $contents | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+class iODFCCleanup: CleanupInterface {
+    iODFCCleanup([String]$targetPath):base($targetPath){
+    }
+    [void]Cleanup(){
+        #Not Implemented, not sure what to cleanup from these yet
+    }
+}
+#endregion
+
 #region BackupTarget Class hierarchy 
 class BackupTarget {
     #Abstract
@@ -191,6 +243,7 @@ class VHDXBackupJob : Job {
     [string]$MountFolder
     hidden [PSObject]$MountPoint
     [BackupInterface]$BackupStragety
+    [CleanupInterface]$CleanupStrategy
     VHDXBackupjob([string]$Name,[string]$VHDXPath,[string]$BackupPath,[string]$MountFolder) : base ($Name) {
         $this.VHDXPath = $VHDXPath
         $this.BackupPath = $BackupPath
@@ -247,12 +300,17 @@ class VHDXBackupJob : Job {
     }
     hidden [boolean]Optimize() {
         try {
-            Optimize-VHD -Path $this.VHDXPath -Mode Full -ErrorAction SilentlyContinue
+            Optimize-VHD -Path $this.VHDXPath -Mode Full -verbose -ErrorAction SilentlyContinue
             return $true
         } catch {
             return $false
         }
     }
+    hidden [string]GetVolumeLetter() {
+        return (Split-Path -Path $this.MountFolder -Parent).substring(0,1)
+    }
+
+
     hidden [boolean]ValidateBackupPath() {
         if (Test-Path -Path $this.BackupPath) {
             return $true
@@ -265,8 +323,16 @@ class VHDXBackupJob : Job {
         $this.BackupStragety.Backup()
         $log.Write("Injest Robocopy log")
         $templog = $this.BackupStragety.GetLog()
-        foreach ($line in $templog) { $log.write($false,"INfo","[Robocopy]"+$line) }
+        foreach ($line in $templog) { $log.write($false,"Info","[Robocopy]"+$line) }
         $log.Write("End Robocopy Log")
+    }
+    [void]Cleanup([logfile]$log) {
+        $log.write("Starting Cleanup")
+        $this.CleanupStrategy.Cleanup()
+        $log.Write("Inject Cleanup Log")
+        $templog = $this.CleanupStrategy.GetLog()
+        foreach ($line in $templog) { $log.write($false,"Info","[Cleanup]"+$line) }
+        $log.write("End Cleanup Log")
     }
     [void]Main([logFile]$Log) {
         [double]$SizeBefore = 0
@@ -287,10 +353,43 @@ class VHDXBackupJob : Job {
                     Start-Sleep -Seconds 2
                     $this.Backup($log)
 
+                    #Ready to start cleanup
+                    start-sleep -Seconds 2
+                    $this.Cleanup($log)
+
                     #Done with Backup
+                  
+                 
+                    #Remove the access path
                     $log.Write("Removing the access path")
                     $this.RemoveAccessPath()
-    
+
+                    #Dismount the VHDX
+                    $log.Write("Dismounting VHDX")
+                    $this.Dismount()
+
+                    #Critical test to ensure the disk is dismounted
+                    if ($this.DestroyMountFolder()) {
+                        $log.write("Cleaned up the mount folder")
+                    } else {
+                        $log.write("Error","Failed to cleanup mount folder, manually unmount vhdx, data could be at risk")
+                        throw;
+                    }
+                    
+                    #File System Consolidation requires a direct drive mount and not a mount point
+                    #Optimize the file system
+                    $driveletter = "O"
+                    $log.write("Optimizing the file system")
+                    $this.mountPoint = Mount-VHD $this.VHDXPath -Passthru -Verbose -NoDriveLetter
+                    $this.mountPoint | Get-Disk | Get-Partition | Add-PartitionAccessPath -AccessPath "$($driveletter):" -PassThru -Verbose | out-null
+                    $WorkingVolume = $this.mountPoint | get-Disk | Get-Partition | Get-Volume
+                    $diskNumber = (get-volume | Where-Object {$_.FileSystemLabel -eq $WorkingVolume.FileSystemLabel} | Get-Partition | Get-disk).Number
+                    $partitionNumber = (get-volume | Where-Object {$_.FileSystemLabel -eq $WorkingVolume.FileSystemLabel} | Get-Partition).PartitionNumber
+                    Optimize-Volume -DriveLetter $WorkingVolume.DriveLetter -ReTrim -Analyze -SlabConsolidate -verbose
+                    Remove-PartitionAccessPath -DiskNumber $diskNumber -PartitionNumber $partitionNumber -AccessPath "$($driveletter):"
+                    Dismount-VHD -Path $this.VHDXPath -Passthru -Verbose | out-null
+
+                    #Optimize the VHDX - only works if file system optimization ran and the disk is dismounted
                     $log.write("Optimizing VHDX")
                     $sizeBefore = $this.MeasureSize()
                     if ($this.Optimize()) {
@@ -299,17 +398,8 @@ class VHDXBackupJob : Job {
                     } else {
                         $Log.write("Warn","There was an error optimizing VHDX - $($this.VHDXPath), this VHDX will not be shrunk")
                     }
-                    
-                    $log.Write("Dismounting VHDX")
-                    $this.Dismount()
+
     
-                    #Critical test to ensure the disk is dismounted
-                    if ($this.DestroyMountFolder()) {
-                        $log.write("Cleaned up the mount folder")
-                    } else {
-                        $log.write("Error","Failed to cleanup mount folder, manually unmount vhdx, data could be at risk")
-                        throw;
-                    }
                 } else {
                     $log.Write("Error","Creating the mount folder failed")
                 } #test mount folder
@@ -331,6 +421,10 @@ Class FSLogixProfileBackupJob : VHDXBackupJob {
         $this.BackupStragety = [iProfileBackup]::new($this.MountFolder,$this.BackupPath)
         ([VHDXBackupJob]$this).Backup($log)
     }
+    [void]Cleanup([LogFile]$log) {
+        $this.CleanupStrategy = [iProfileCleanup]::new($this.mountFolder)
+        ([VHDXBackupJob]$this).Cleanup($log)
+    }
 }
 
 class FSLogixODFCBackupJob : VHDXBackupJob {
@@ -339,6 +433,10 @@ class FSLogixODFCBackupJob : VHDXBackupJob {
     [void]Backup([Logfile]$log) {
         $this.BackupStragety = [iODFCBackup]::new($this.MountFolder,$this.BackupPath)
         ([VHDXBackupJob]$this).Backup($log)
+    }
+    [void]Cleanup([LogFile]$log) {
+        $this.CleanupStrategy = [iODFCCleanup]::new($this.mountFolder)
+        ([VHDXBackupJob]$this).Cleanup($log)
     }
 }
 
