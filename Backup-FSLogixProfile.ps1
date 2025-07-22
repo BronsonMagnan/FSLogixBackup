@@ -95,7 +95,8 @@ class iProfileBackup : BackupInterface {
     }
     [void]Backup() {
         $src = Join-Path -Path $this.Source -ChildPath "Profile"
-        robocopy "$src" "$($this.Destination)" /XO /XF *.ost /XJ /XD "System Volume Information" "$src\Appdata\Local" "$src\Appdata\LocalLow" /E /W:0 /R:0 /MT:100 /LOG:"$($this.robocopyLog)"
+        #robocopy "$src" "$($this.Destination)" /XO /XF *.ost /XJ /XD "System Volume Information" "$src\Appdata\Local" "$src\Appdata\LocalLow" /E /W:0 /R:0 /MT:100 /LOG:"$($this.robocopyLog)"
+        robocopy "$src" "$($this.Destination)" /XO /XF *.ost *.lnk /XJ /XD "System Volume Information" "$src\Appdata\Local" "$src\Appdata\LocalLow" /E /PURGE /W:0 /R:0 /MT:100 /LOG:"$($this.robocopyLog)"
     }
 }
 
@@ -106,7 +107,8 @@ class iODFCBackup : BackupInterface {
     }
     [void]Backup() {
         $src = Join-Path -Path $this.Source -ChildPath "ODFC"
-        robocopy "$src" "$($this.Destination)" /XO /XF *.ost /XJ /XD "System Volume Information" "$src\Appdata\Local" "$src\Appdata\LocalLow" /E /W:0 /R:0 /MT:100 /LOG:"$($this.robocopyLog)"
+        #robocopy "$src" "$($this.Destination)" /XO /XF *.ost /XJ /XD "System Volume Information" "$src\Appdata\Local" "$src\Appdata\LocalLow" /E /W:0 /R:0 /MT:100 /LOG:"$($this.robocopyLog)"
+        robocopy "$src" "$($this.Destination)" /XO /XF *.ost *.lnk /XJ /XD "System Volume Information" "$src\Appdata\Local" "$src\Appdata\LocalLow" /E /PURGE /W:0 /R:0 /MT:100 /LOG:"$($this.robocopyLog)"
     }
 }
 
@@ -285,11 +287,11 @@ class VHDXBackupJob : Job {
         }
     }
     hidden [void]MountWithAccessPath() {
-        $this.mountPoint=Mount-VHD $this.VHDXPath -Passthru -Verbose | Get-Disk | Get-Partition | Add-PartitionAccessPath -AccessPath $this.MountFolder -PassThru -Verbose | get-volume | select-object *        
+        $this.mountPoint=Mount-VHD $this.VHDXPath -Passthru -Verbose | Get-Disk | Get-Partition | Where-Object {$_.Type -eq "Basic"} | Add-PartitionAccessPath -AccessPath $this.MountFolder -PassThru -Verbose | get-volume | select-object *        
     }
     hidden [void]RemoveAccessPath() {
-        $diskNumber = (get-volume | Where-Object {$_.FileSystemLabel -eq $this.mountPoint.FileSystemLabel} | Get-Partition | Get-disk).Number
-        $partitionNumber = (get-volume | Where-Object {$_.FileSystemLabel -eq $this.mountPoint.FileSystemLabel} | Get-Partition).PartitionNumber
+        $diskNumber = (get-volume | Where-Object {$_.FileSystemLabel -eq $this.mountPoint.FileSystemLabel} | Get-Partition| Where-Object {$_.Type -eq "Basic"} | Get-disk).Number
+        $partitionNumber = (get-volume | Where-Object {$_.FileSystemLabel -eq $this.mountPoint.FileSystemLabel} | Get-Partition| Where-Object {$_.Type -eq "Basic"}).PartitionNumber
         Remove-PartitionAccessPath -DiskNumber $diskNumber -PartitionNumber $partitionNumber -AccessPath $this.mountFolder
     }
     hidden [void]Dismount() {
@@ -337,6 +339,7 @@ class VHDXBackupJob : Job {
     [void]Main([logFile]$Log) {
         [double]$SizeBefore = 0
         [double]$SizeAfter = 0
+        $jobStart = Get-Date #added
         ([job]$this).Main($Log)
         if ($this.ValidateBackupPath()) {
             #Test File Open
@@ -381,11 +384,22 @@ class VHDXBackupJob : Job {
                     $driveletter = "O"
                     $log.write("Optimizing the file system")
                     $this.mountPoint = Mount-VHD $this.VHDXPath -Passthru -Verbose -NoDriveLetter
-                    $this.mountPoint | Get-Disk | Get-Partition | Add-PartitionAccessPath -AccessPath "$($driveletter):" -PassThru -Verbose | out-null
-                    $WorkingVolume = $this.mountPoint | get-Disk | Get-Partition | Get-Volume
-                    $diskNumber = (get-volume | Where-Object {$_.FileSystemLabel -eq $WorkingVolume.FileSystemLabel} | Get-Partition | Get-disk).Number
-                    $partitionNumber = (get-volume | Where-Object {$_.FileSystemLabel -eq $WorkingVolume.FileSystemLabel} | Get-Partition).PartitionNumber
-                    Optimize-Volume -DriveLetter $WorkingVolume.DriveLetter -ReTrim -Analyze -SlabConsolidate -verbose
+                    $this.mountPoint | Get-Disk | Get-Partition | Where-Object {$_.Type -eq "Basic"} | Add-PartitionAccessPath -AccessPath "$($driveletter):" -PassThru -Verbose | out-null
+                    $WorkingVolume = $this.mountPoint | get-Disk | Get-Partition | Where-Object {$_.Type -eq "Basic"} | Get-Volume
+                    $diskNumber = (get-volume | Where-Object {$_.FileSystemLabel -eq $WorkingVolume.FileSystemLabel} | Get-Partition | Where-Object {$_.Type -eq "Basic"} | Get-disk).Number
+                    $partitionNumber = (get-volume | Where-Object {$_.FileSystemLabel -eq $WorkingVolume.FileSystemLabel} | Get-Partition| Where-Object {$_.Type -eq "Basic"} ).PartitionNumber
+                    
+                    #Defragment the volume
+                    $DefragOutput = Optimize-Volume -DriveLetter $WorkingVolume.DriveLetter -Analyze -Defrag -verbose 4>&1
+                    $DefragLog = $DefragOutput | ForEach-Object {$_.ToString()}
+                    $DefragLog | ForEach-Object { $log.write("Info", $_) }
+
+                    #Retrim the volume after defragmentation
+                    $ReTrimOutput = Optimize-Volume -DriveLetter $WorkingVolume.DriveLetter -ReTrim -Analyze -SlabConsolidate -verbose 4>&1
+                    $RetrimLog = $ReTrimOutput | ForEach-Object {$_.ToString()}
+                    $RetrimLog | ForEach-Object { $log.write("Info", $_) }
+                    
+
                     Remove-PartitionAccessPath -DiskNumber $diskNumber -PartitionNumber $partitionNumber -AccessPath "$($driveletter):"
                     Dismount-VHD -Path $this.VHDXPath -Passthru -Verbose | out-null
 
@@ -407,6 +421,9 @@ class VHDXBackupJob : Job {
         } else {
             $log.write("Error","Backup Storage Path $($this.BackupPath) is not Accessible")
         } #test backup storage location
+        $jobEnd = Get-Date
+        $duration = $jobEnd - $jobStart
+        $log.write("Info","Job Duration: $($duration.totalSeconds) Seconds")
     }
     [void]Cancel([logFile]$Log) {
         ([job]$this).Cancel($Log)
